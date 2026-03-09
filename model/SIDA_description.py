@@ -12,7 +12,10 @@ from .llava.model.language_model.llava_llama import (LlavaLlamaForCausalLM,
 
 from .segment_anything import build_sam_vit_h
 
-from torchviz import make_dot
+try:
+    from torchviz import make_dot
+except ImportError:
+    pass
 import itertools 
 
 import deepspeed
@@ -422,9 +425,19 @@ class SIDAForCausalLM(LlavaLlamaForCausalLM):
                 output_hidden_states=True,
                 return_dict_in_generate=True,
             )
-            output_hidden_states = outputs.hidden_states[-1]
             output_ids = outputs.sequences
-            frozen_hidden_states = output_hidden_states[-1].detach()
+
+            # Reconstruct full hidden states by concatenating across all
+            # generation steps. Each step may return a tensor or a tuple of
+            # per-layer tensors depending on the transformers version.
+            step_tensors = []
+            for step_hs in outputs.hidden_states:
+                if isinstance(step_hs, (tuple, list)):
+                    step_tensors.append(step_hs[-1])  # last layer
+                else:
+                    step_tensors.append(step_hs)
+            output_hidden_states = torch.cat(step_tensors, dim=1)
+
             non_zero_tokens = output_ids[0][output_ids[0] != 0]
 
             # Get classification token mask
@@ -480,6 +493,9 @@ class SIDAForCausalLM(LlavaLlamaForCausalLM):
 
                     # Apply attention mechanism
                     cls_projected = self.model.sida_fc1(cls_result)
+                    # Cast attention layer to match input dtype (fixes 4bit quantization mismatch)
+                    attn_dtype = cls_projected.dtype
+                    self.model.attention_layer = self.model.attention_layer.to(dtype=attn_dtype)
                     enhanced_pred_embeddings = []
                     for i in range(len(pred_embeddings)):
                         seg_embeddings = pred_embeddings[i]

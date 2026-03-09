@@ -26,7 +26,7 @@ from ..llava_arch import LlavaMetaForCausalLM, LlavaMetaModel
 
 
 class LlavaConfig(LlamaConfig):
-    model_type = "llava"
+    model_type = "llava_sida"
 
 
 class LlavaLlamaModel(LlavaMetaModel, LlamaModel):
@@ -56,7 +56,8 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
         self,
         input_ids: torch.LongTensor = None,
         attention_mask: Optional[torch.Tensor] = None,
-        past_key_values: Optional[List[torch.FloatTensor]] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values=None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         labels: Optional[torch.LongTensor] = None,
         use_cache: Optional[bool] = None,
@@ -64,6 +65,8 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
         output_hidden_states: Optional[bool] = None,
         images: Optional[torch.FloatTensor] = None,
         return_dict: Optional[bool] = None,
+        cache_position: Optional[torch.LongTensor] = None,
+        **kwargs,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         output_attentions = (
             output_attentions
@@ -90,7 +93,8 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
         )
         # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
 
-        outputs = self.model(
+        # Build kwargs for self.model, passing through new transformers args
+        model_kwargs = dict(
             input_ids=input_ids,
             attention_mask=attention_mask,
             past_key_values=past_key_values,
@@ -100,6 +104,11 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
         )
+        if position_ids is not None:
+            model_kwargs["position_ids"] = position_ids
+        if cache_position is not None:
+            model_kwargs["cache_position"] = cache_position
+        outputs = self.model(**model_kwargs)
 
         hidden_states = outputs[0]
         logits = self.lm_head(hidden_states)
@@ -143,11 +152,21 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
         images=None,
         **kwargs
     ):
-        if past_key_values:
+        # In transformers 5.x, past_key_values can be an empty DynamicCache
+        # object (not None) even during the prefill step. Only truncate
+        # input_ids when the cache actually has content.
+        has_past = past_key_values is not None
+        if has_past:
+            if hasattr(past_key_values, "get_seq_length"):
+                has_past = past_key_values.get_seq_length() > 0
+            elif isinstance(past_key_values, (tuple, list)):
+                has_past = len(past_key_values) > 0
+
+        if has_past:
             input_ids = input_ids[:, -1:]
 
         # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
-        if inputs_embeds is not None and past_key_values is None:
+        if inputs_embeds is not None and not has_past:
             model_inputs = {"inputs_embeds": inputs_embeds}
         else:
             model_inputs = {"input_ids": input_ids}
@@ -163,5 +182,5 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
         return model_inputs
 
 
-AutoConfig.register("llava", LlavaConfig)
+AutoConfig.register("llava_sida", LlavaConfig)
 AutoModelForCausalLM.register(LlavaConfig, LlavaLlamaForCausalLM)

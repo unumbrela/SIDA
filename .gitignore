@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+
+ck/**/*.bin
+ck/**/*.pth
+ck/**/*.pt
+ck/**/*.safetensors
+
+My_Forgery_Location_Task/dataset/
+
+日志
