@@ -7,5 +7,6 @@ ck/**/*.pt
 ck/**/*.safetensors
 
 My_Forgery_Location_Task/dataset/
+vis_output_batch/
 
 日志

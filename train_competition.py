@@ -263,11 +263,16 @@ def main(args):
         if os.path.exists(resume_path):
             args.resume = resume_path
     if args.resume:
-        load_path, _ = model_engine.load_checkpoint(args.resume)
-        with open(os.path.join(args.resume, "latest"), "r") as f:
-            ckpt_dir = f.readlines()[0].strip()
-        args.start_epoch = int(ckpt_dir.replace("global_step", "")) // args.steps_per_epoch
-        print(f"Resumed from {args.resume}, starting epoch {args.start_epoch}")
+        latest_file = os.path.join(args.resume, "latest")
+        if os.path.exists(latest_file):
+            load_path, _ = model_engine.load_checkpoint(args.resume)
+            with open(latest_file, "r") as f:
+                ckpt_dir = f.readlines()[0].strip()
+            args.start_epoch = int(ckpt_dir.replace("global_step", "")) // args.steps_per_epoch
+            print(f"Resumed from {args.resume}, starting epoch {args.start_epoch}")
+        else:
+            print(f"Warning: {latest_file} not found, skipping resume and training from scratch.")
+            args.resume = ""
 
     # ---- Training loop ----
     train_iter = iter(train_loader)
