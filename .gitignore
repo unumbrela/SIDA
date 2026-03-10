@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 .codex_csvfix_venv/
+# Local model weights and tokenizer assets should stay machine-specific.
 ck/
 ck/**/*.bin
 ck/**/*.pth
