@@ -11,7 +11,7 @@ import transformers
 from peft import LoraConfig, get_peft_model
 from transformers import AutoTokenizer
 
-from model.SIDA import SIDAForCausalLM
+from model.SIDA_description import SIDAForCausalLM
 from utils.utils import DEFAULT_IM_END_TOKEN, DEFAULT_IM_START_TOKEN
 
 
@@ -33,7 +33,7 @@ def parse_args(args):
     parser.add_argument("--vision_pretrained", default="PATH_TO_SAM_ViT-H", type=str)
     parser.add_argument("--out_dim", default=256, type=int)
     parser.add_argument("--image_size", default=1024, type=int, help="image size")
-    parser.add_argument("--model_max_length", default=512, type=int)
+    parser.add_argument("--model_max_length", default=2048, type=int)
     parser.add_argument(
         "--vision-tower", default="openai/clip-vit-large-patch14", type=str
     )
@@ -70,6 +70,7 @@ def main(args):
     tokenizer.pad_token = tokenizer.unk_token
     tokenizer.add_tokens("[CLS]")
     tokenizer.add_tokens("[SEG]")
+    tokenizer.add_tokens("[END]")
     args.cls_token_idx = tokenizer("[CLS]", add_special_tokens=False).input_ids[0]
     args.seg_token_idx = tokenizer("[SEG]", add_special_tokens=False).input_ids[0]
 
@@ -150,8 +151,26 @@ def main(args):
 
     model.resize_token_embeddings(len(tokenizer))
 
-    state_dict = torch.load(args.weight, map_location="cpu")
-    model.load_state_dict(state_dict, strict=True)
+    # Load checkpoint (support both single file and sharded format)
+    if os.path.isdir(args.weight):
+        try:
+            from accelerate import load_checkpoint_in_model
+            load_checkpoint_in_model(model, args.weight, strict=True)
+        except ImportError:
+            # Fallback: manually load sharded checkpoint
+            import json
+            index_file = os.path.join(args.weight, "pytorch_model.bin.index.json")
+            with open(index_file, "r") as f:
+                index = json.load(f)
+            shard_files = set(index["weight_map"].values())
+            state_dict = {}
+            for shard_file in sorted(shard_files):
+                shard_path = os.path.join(args.weight, shard_file)
+                state_dict.update(torch.load(shard_path, map_location="cpu"))
+            model.load_state_dict(state_dict, strict=True)
+    else:
+        state_dict = torch.load(args.weight, map_location="cpu")
+        model.load_state_dict(state_dict, strict=True)
 
     model = model.merge_and_unload()
     state_dict = {}

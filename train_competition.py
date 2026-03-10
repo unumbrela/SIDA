@@ -60,7 +60,7 @@ def parse_args(args):
 
     # Model args
     parser.add_argument("--image_size", default=1024, type=int)
-    parser.add_argument("--model_max_length", default=1024, type=int)
+    parser.add_argument("--model_max_length", default=2048, type=int)
     parser.add_argument("--lora_r", default=8, type=int)
     parser.add_argument("--lora_alpha", default=16, type=int)
     parser.add_argument("--lora_dropout", default=0.05, type=float)
@@ -260,7 +260,7 @@ def main(args):
     # ---- Resume ----
     if args.auto_resume and not args.resume:
         resume_path = os.path.join(args.log_dir, "ckpt_model")
-        if os.path.exists(resume_path):
+        if os.path.exists(resume_path) and os.path.exists(os.path.join(resume_path, "latest")):
             args.resume = resume_path
     if args.resume:
         latest_file = os.path.join(args.resume, "latest")
@@ -271,27 +271,18 @@ def main(args):
             args.start_epoch = int(ckpt_dir.replace("global_step", "")) // args.steps_per_epoch
             print(f"Resumed from {args.resume}, starting epoch {args.start_epoch}")
         else:
-            print(f"Warning: {latest_file} not found, skipping resume and training from scratch.")
+            print(f"Warning: {latest_file} not found, training from scratch.")
             args.resume = ""
 
     # ---- Training loop ----
     train_iter = iter(train_loader)
     for epoch in range(args.start_epoch, args.epochs):
         train_iter = train_one_epoch(train_loader, model_engine, epoch, scheduler, writer, train_iter, args)
-
-        # Save checkpoint every epoch
-        save_dir = os.path.join(args.log_dir, "ckpt_model")
         if args.local_rank == 0:
-            if os.path.exists(save_dir):
-                shutil.rmtree(save_dir)
-        if args.distributed:
-            torch.distributed.barrier()
-        model_engine.save_checkpoint(save_dir)
-        if args.local_rank == 0:
-            print(f"Checkpoint saved after epoch {epoch + 1}")
+            print(f"Epoch {epoch + 1}/{args.epochs} completed.")
 
-    # Final checkpoint
-    save_dir = os.path.join(args.log_dir, "final_checkpoint")
+    # Save only final checkpoint (saves disk space)
+    save_dir = os.path.join(args.log_dir, "ckpt_model")
     if args.local_rank == 0:
         if os.path.exists(save_dir):
             shutil.rmtree(save_dir)
@@ -299,7 +290,7 @@ def main(args):
         torch.distributed.barrier()
     model_engine.save_checkpoint(save_dir)
     if args.local_rank == 0:
-        print(f"\nTraining completed. Final checkpoint: {save_dir}")
+        print(f"\nTraining completed. Checkpoint saved to: {save_dir}")
 
 
 def train_one_epoch(train_loader, model, epoch, scheduler, writer, train_iter, args):

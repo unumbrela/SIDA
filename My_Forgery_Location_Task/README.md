@@ -66,3 +66,99 @@ def mask_file_to_rle(mask_path: str) -> str:
 ● 可解释综合评分：SExp=0.5×SAuto+0.5×SSimSExp=0.5×SAuto+0.5×SSim
 赛题最终计算三个任务的加权平均分(S_Fin)作为最终的排名依据，针对可解释指标，在代码复核阶段会安排人类专家对结果进行抽样评估。
 SFin=0.45×SDet+0.25×SLoc+0.3×SExpSFin=0.45×SDet+0.25×SLoc+0.3×SExp
+
+
+利用SIDA 完成以上赛题任务，远程服务器：A6000  48G显存
+
+========== SIDA-13B-description 微调方案 (推荐) ==========
+
+  Step 0: 修复13B模型配置 (首次运行)
+
+  python fix_13b_config.py ./ck/SIDA-13B-description/config.json
+
+  Step 1: 微调训练 (13B)
+
+  先清理之前的checkpoint避免自动resume冲突：
+  rm -rf ./runs/SIDA-13B-competition
+
+  deepspeed --master_port=24999 train_competition.py \
+      --version="./ck/SIDA-13B-description" \
+      --dataset_dir="./My_Forgery_Location_Task/dataset/train" \
+      --vision_pretrained="./ck/sam_vit_h_4b8939.pth" \
+      --vision-tower="./ck/clip-vit-large-patch14" \
+      --exp_name="SIDA-13B-competition" \
+      --epochs=5 \
+      --steps_per_epoch=200 \
+      --batch_size=1 \
+      --grad_accumulation_steps=10 \
+      --lr=3e-5 \
+      --precision=bf16 \
+      --val_ratio=0.1 \
+      --model_max_length=2048
+
+  Step 2: 转换 DeepSpeed checkpoint + 合并 LoRA
+
+  cd ./runs/SIDA-13B-competition/ckpt_model && python zero_to_fp32.py . ../pytorch_model.bin
+  cd /home/featurize/work/SIDA
+
+  python merge_lora_weights_and_save_hf_model.py \
+    --version "./ck/SIDA-13B-description" \
+    --weight "./runs/SIDA-13B-competition/pytorch_model.bin" \
+    --save_path "./ck/SIDA-13B-competition" \
+    --vision-tower "./ck/clip-vit-large-patch14"
+
+  Step 3: 推理
+
+  python batch_inference.py \
+    --version "./ck/SIDA-13B-competition" \
+    --test_dir "./My_Forgery_Location_Task/dataset/test" \
+    --output_csv "./My_Forgery_Location_Task/submission_finetune_SIDA_13B.csv" \
+    --precision bf16 \
+    --model_max_length 2048 \
+    --vision-tower "./ck/clip-vit-large-patch14" \
+    --save_vis \
+    --vis_save_path "./vis_finetune_SIDA_13B"
+
+========== SIDA-7B-description 微调方案 (备用) ==========
+
+  Step 1: 微调训练 (7B)
+
+  rm -rf ./runs/SIDA-7B-competition
+
+  deepspeed --master_port=24999 train_competition.py \
+      --version="./ck/SIDA-7B-description" \
+      --dataset_dir="./My_Forgery_Location_Task/dataset/train" \
+      --vision_pretrained="./ck/sam_vit_h_4b8939.pth" \
+      --vision-tower="./ck/clip-vit-large-patch14" \
+      --exp_name="SIDA-7B-competition" \
+      --epochs=5 \
+      --steps_per_epoch=200 \
+      --batch_size=1 \
+      --grad_accumulation_steps=10 \
+      --lr=5e-5 \
+      --precision=bf16 \
+      --val_ratio=0.1 \
+      --model_max_length=2048
+
+  Step 2: 转换 + 合并
+
+  cd ./runs/SIDA-7B-competition/ckpt_model && python zero_to_fp32.py . ../pytorch_model.bin
+  cd /home/featurize/work/SIDA
+
+  python merge_lora_weights_and_save_hf_model.py \
+    --version "./ck/SIDA-7B-description" \
+    --weight "./runs/SIDA-7B-competition/pytorch_model.bin" \
+    --save_path "./ck/SIDA-7B-competition" \
+    --vision-tower "./ck/clip-vit-large-patch14"
+
+  Step 3: 推理
+
+  python batch_inference.py \
+    --version "./ck/SIDA-7B-competition" \
+    --test_dir "./My_Forgery_Location_Task/dataset/test" \
+    --output_csv "./My_Forgery_Location_Task/submission_finetune_SIDA_7B.csv" \
+    --precision bf16 \
+    --model_max_length 2048 \
+    --vision-tower "./ck/clip-vit-large-patch14" \
+    --save_vis \
+    --vis_save_path "./vis_finetune_SIDA_7B"

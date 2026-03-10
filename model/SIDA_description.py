@@ -412,8 +412,9 @@ class SIDAForCausalLM(LlavaLlamaForCausalLM):
         input_ids,
         resize_list,
         original_size_list,
-        max_new_tokens=32,
+        max_new_tokens=512,
         tokenizer=None,
+        repetition_penalty=1.2,
     ):
         with torch.no_grad():
             # Generate output sequence
@@ -422,6 +423,7 @@ class SIDAForCausalLM(LlavaLlamaForCausalLM):
                 input_ids=input_ids,
                 max_new_tokens=max_new_tokens,
                 num_beams=1,
+                repetition_penalty=repetition_penalty,
                 output_hidden_states=True,
                 return_dict_in_generate=True,
             )
@@ -462,8 +464,9 @@ class SIDAForCausalLM(LlavaLlamaForCausalLM):
                 last_cls_logits = cls_result[-1]  # Shape: [num_classes]
                 predicted_class = torch.argmax(last_cls_logits).item()  # Get class index (0, 1, or 2)
 
-                # Only generate masks if class is 2 (tampered)
-                if predicted_class == 2:
+                # Generate masks if class is not 0 (real)
+                # Class 1 = full synthetic, Class 2 = tampered — both need masks
+                if predicted_class != 0:
                     # Process segmentation tokens
                     seg_token_mask = (output_ids[:, 1:] == self.seg_token_idx)
                     seg_token_mask = torch.cat([

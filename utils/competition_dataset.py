@@ -28,10 +28,10 @@ from .utils import DEFAULT_IM_END_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IMAGE_T
 
 
 QUESTION_TEMPLATES = [
-    "请判断这张图片是真实拍摄的还是经过伪造篡改的。如果是伪造的，请标注伪造区域并解释原因。",
-    "请分析这张场景文本图像的真实性。如果发现伪造痕迹，请定位伪造区域并给出判断依据。",
-    "这张图片是否经过篡改？如果是，请标记被篡改的区域，并详细说明伪造的原因。",
-    "请鉴定这张图片的真伪。若判定为伪造，请指出伪造位置并阐述理由。",
+    "请判断这张场景文本图片是真实拍摄的还是经过伪造篡改的。如果是伪造的，请用[SEG]标注伪造区域，并详细解释伪造原因，包括视觉异常和逻辑矛盾。如果是真实的，请说明判断依据。",
+    "请分析这张场景文本图像的真实性。如果发现伪造篡改痕迹，请用[SEG]定位伪造区域，并从视觉特征和内容逻辑两方面给出详细的判断依据。如果是真实图像，请解释为什么判断为真实。",
+    "这张场景文本图片是否经过伪造篡改？如果是，请用[SEG]标记被篡改的区域，并详细描述篡改的视觉证据和逻辑矛盾。如果未发现篡改，请说明图像真实的依据。",
+    "请鉴定这张场景文本图片的真伪。若判定为伪造，请用[SEG]指出伪造位置，并从字体、光影、纹理、语义等方面阐述伪造的具体证据。若判定为真实，请给出真实性的分析依据。",
 ]
 
 
@@ -128,7 +128,7 @@ def collate_fn(
         target[cur_len:] = IGNORE_INDEX
 
     if not inferences[0]:
-        truncate_len = tokenizer.model_max_length - 255
+        truncate_len = tokenizer.model_max_length
         if input_ids.shape[1] > truncate_len:
             input_ids = input_ids[:, :truncate_len]
             targets = targets[:, :truncate_len]
@@ -254,15 +254,13 @@ class CompetitionDataset(torch.utils.data.Dataset):
     def _build_response(self, cls_label, caption):
         """Build the target response string."""
         if cls_label == 0:
-            base = "[CLS] 这张图片是真实的。"
             if caption:
-                return f"{base} {caption} [END]"
-            return f"{base} [END]"
+                return f"[CLS] 这张图片是真实的。{caption} [END]"
+            return "[CLS] 这张图片是真实的。该图像为真实拍摄，未发现数字伪造或后期篡改的痕迹。 [END]"
         else:  # cls_label == 2 (tampered)
-            base = "[CLS] 这张图片经过伪造篡改。"
             if caption:
-                return f"{base} [SEG] {caption} [END]"
-            return f"{base} [SEG] [END]"
+                return f"[CLS] 这张图片经过伪造篡改。[SEG] {caption} [END]"
+            return "[CLS] 这张图片经过伪造篡改。[SEG] 该图像存在伪造篡改痕迹。 [END]"
 
     def __getitem__(self, idx):
         img_path, cls_label, mask_path, caption = self.samples[idx]

@@ -40,7 +40,7 @@ def parse_args():
                         help="Path to save visualization (optional)")
     parser.add_argument("--precision", default="bf16", type=str, choices=["fp32", "bf16", "fp16"])
     parser.add_argument("--image_size", default=1024, type=int)
-    parser.add_argument("--model_max_length", default=1024, type=int)
+    parser.add_argument("--model_max_length", default=2048, type=int)
     parser.add_argument("--lora_r", default=8, type=int)
     parser.add_argument("--vision-tower", default="openai/clip-vit-large-patch14", type=str)
     parser.add_argument("--load_in_4bit", action="store_true", default=False)
@@ -50,7 +50,7 @@ def parse_args():
     parser.add_argument("--save_vis", action="store_true", default=False,
                         help="Whether to save mask visualizations")
     parser.add_argument("--prompt", type=str,
-                        default="请判断这张图片是真实拍摄的还是经过伪造篡改的。如果是伪造的，请标注伪造区域并解释原因。",
+                        default="请判断这张场景文本图片是真实拍摄的还是经过伪造篡改的。如果是伪造的，请用[SEG]标注伪造区域，并详细解释伪造原因，包括视觉异常和逻辑矛盾。如果是真实的，请说明判断依据。",
                         help="Prompt text for the model")
     return parser.parse_args()
 
@@ -108,35 +108,95 @@ def make_empty_rle(h: int, w: int) -> str:
     return json.dumps(rle_dict)
 
 
-def extract_explanation(text_output: str) -> str:
+def is_garbage_text(text):
+    """Detect garbage/repetitive output patterns."""
+    if re.search(r'(.)\1{15,}', text):
+        return True
+    if re.search(r'(.{2,8})\1{5,}', text):
+        return True
+    if re.search(r'(isms|ursens|ursion|Type Type|B\. B\. B\.)', text):
+        return True
+    if text.count('[CLS]') >= 3:
+        return True
+    return False
+
+
+def classify_from_text(text_output):
     """
-    Extract the explanation portion from the SIDA-description model output.
-    The model typically outputs something like:
-      [CLS] The image is tampered.[SEG] Type: ... Areas: ... Tampered Content: ... Visual Inconsistencies: ...
-    We extract everything after [SEG] (or after classification text) as the explanation.
+    Determine label from model text output.
+    Returns: 0 (real) or 1 (forged)
+    """
+    real_phrases = [
+        "真实拍摄", "真实的", "未发现伪造", "未发现篡改",
+        "未发现数字伪造", "未发现后期篡改", "真实记录", "真实场景",
+    ]
+    forged_phrases = [
+        "伪造", "篡改", "编辑", "合成", "修改", "数字添加",
+        "后期", "AI生成", "人工智能生成", "异常", "不一致", "不自然",
+        "tampered", "forged", "manipulated",
+    ]
+    has_seg = "[SEG]" in text_output
+
+    has_real = any(p in text_output for p in real_phrases)
+    has_forged = any(p in text_output for p in forged_phrases)
+
+    if has_seg or (has_forged and not has_real):
+        return 1
+    if has_real and not has_forged:
+        return 0
+    if has_forged and has_real:
+        first_real = min((text_output.find(p) for p in real_phrases if p in text_output), default=9999)
+        first_forged = min((text_output.find(p) for p in forged_phrases if p in text_output), default=9999)
+        return 0 if first_real < first_forged else 1
+    # Default: forged
+    return 1
+
+
+def extract_explanation(text_output: str, label: int) -> str:
+    """
+    Extract and clean the explanation from model output.
     """
     text = text_output.strip()
 
-    # Remove leading <s> and trailing </s>
+    # Remove special tokens
     text = re.sub(r'^<s>\s*', '', text)
     text = re.sub(r'\s*</s>$', '', text)
+    text = re.sub(r'\s*\[END\]\s*$', '', text, flags=re.IGNORECASE)
     text = re.sub(r'\s*\[end\]\s*$', '', text, flags=re.IGNORECASE)
 
     # Try to extract content after [SEG]
     seg_match = re.search(r'\[SEG\]\s*(.*)', text, re.DOTALL)
     if seg_match:
         explanation = seg_match.group(1).strip()
-        if explanation:
-            return explanation
+        if explanation and len(explanation) > 10:
+            # Clean remaining special tokens from explanation
+            explanation = re.sub(r'\[CLS\]\s*', '', explanation)
+            explanation = re.sub(r'\[SEG\]\s*', '', explanation)
+            explanation = re.sub(r'\[END\]', '', explanation)
+            return explanation.strip()
 
     # Fallback: extract content after classification sentence
-    cls_match = re.search(r'\[CLS\]\s*[^.]*\.\s*(.*)', text, re.DOTALL)
+    cls_match = re.search(r'\[CLS\]\s*[^。]*。\s*(.*)', text, re.DOTALL)
     if cls_match:
         explanation = cls_match.group(1).strip()
-        if explanation:
-            return explanation
+        if explanation and len(explanation) > 10:
+            explanation = re.sub(r'\[CLS\]\s*', '', explanation)
+            explanation = re.sub(r'\[SEG\]\s*', '', explanation)
+            explanation = re.sub(r'\[END\]', '', explanation)
+            return explanation.strip()
 
-    # Last resort: return the whole cleaned text
+    # Clean the whole text
+    text = re.sub(r'\[CLS\]\s*', '', text)
+    text = re.sub(r'\[SEG\]\s*', '', text)
+    text = re.sub(r'\[END\]', '', text)
+    text = text.strip()
+
+    if not text or len(text) < 10 or is_garbage_text(text):
+        if label == 0:
+            return "该图像为真实拍摄，未发现数字伪造或后期篡改的痕迹。"
+        else:
+            return "该图像存在伪造篡改痕迹，篡改区域已标出。"
+
     return text
 
 
@@ -233,6 +293,15 @@ def main():
     ])
     print(f"Found {len(image_names)} test images in {test_dir}\n")
 
+    # ---- Open CSV file for real-time writing ----
+    output_csv = args.output_csv
+    os.makedirs(os.path.dirname(output_csv) or ".", exist_ok=True)
+    csv_file = open(output_csv, "w", newline="", encoding="utf-8")
+    writer = csv.DictWriter(csv_file, fieldnames=["image_name", "label", "location", "explanation"])
+    writer.writeheader()
+    csv_file.flush()
+
+
     # ---- Inference loop ----
     results = []
     for idx, image_name in enumerate(image_names):
@@ -310,8 +379,9 @@ def main():
                     input_ids,
                     resize_list,
                     original_size_list,
-                    max_new_tokens=512,
+                    max_new_tokens=1024,
                     tokenizer=tokenizer,
+                    repetition_penalty=1.3,
                 )
 
             # Decode text output
@@ -320,40 +390,11 @@ def main():
             text_output = text_output.replace("\n", "").replace("  ", " ")
             text_output = remove_repeated_tags(text_output)
 
-            # ---- Determine label ----
-            # Check text output for classification cues (English + Chinese)
-            text_lower = text_output.lower()
-            has_tampered = any(kw in text_lower for kw in [
-                "tampered", "altered", "forged", "manipulated",
-            ]) or any(kw in text_output for kw in [
-                "伪造", "篡改", "编辑", "合成",
-            ])
-            has_real = any(kw in text_lower for kw in [
-                "real", "authentic", "genuine",
-            ]) or any(kw in text_output for kw in [
-                "真实",
-            ])
-            has_synthetic = any(kw in text_lower for kw in [
-                "synthetic", "generated", "fake",
-            ])
-            # Also check if model produced [SEG] token (indicates it found tampered region)
-            has_seg = "[SEG]" in text_output
-
-            if has_tampered or has_seg:
-                label = 1
-                is_tampered = True
-            elif has_real and not has_tampered:
-                label = 0
-                is_tampered = False
-            elif has_synthetic:
-                label = 1
-                is_tampered = False
-            else:
-                label = 1
-                is_tampered = True
+            # ---- Determine label from text ----
+            label = classify_from_text(text_output)
 
             # ---- Build mask RLE ----
-            if is_tampered and len(pred_masks) > 0:
+            if label == 1 and len(pred_masks) > 0:
                 # Merge all predicted masks into one binary mask
                 combined_mask = np.zeros((original_h, original_w), dtype=np.uint8)
                 for pred_mask in pred_masks:
@@ -372,14 +413,18 @@ def main():
             else:
                 # No tampered region: output empty mask
                 rle_str = make_empty_rle(original_h, original_w)
+                # If label=1 but no mask was produced, reconsider
+                if label == 1 and len(pred_masks) == 0:
+                    label = 0
 
             # ---- Extract explanation ----
-            explanation = extract_explanation(text_output)
-            if not explanation or len(explanation) < 5:
+            explanation = extract_explanation(text_output, label)
+            # Final garbage check
+            if is_garbage_text(explanation):
                 if label == 0:
-                    explanation = "该图像为真实拍摄，未发现伪造或篡改痕迹。"
+                    explanation = "该图像为真实拍摄，未发现数字伪造或后期篡改的痕迹。"
                 else:
-                    explanation = "该图像存在伪造或篡改痕迹。"
+                    explanation = "该图像存在伪造篡改痕迹，篡改区域已标出。"
 
             results.append({
                 "image_name": image_name,
@@ -387,6 +432,10 @@ def main():
                 "location": rle_str,
                 "explanation": explanation,
             })
+
+            # Write to CSV immediately
+            writer.writerow(results[-1])
+            csv_file.flush()
 
             elapsed = time.time() - start_time
             print(f"[{idx+1}/{len(image_names)}] {image_name} | label={label} | {elapsed:.1f}s | {explanation[:80]}...")
@@ -409,14 +458,9 @@ def main():
         # Free GPU memory
         torch.cuda.empty_cache()
 
-    # ---- Write CSV ----
-    output_csv = args.output_csv
-    os.makedirs(os.path.dirname(output_csv) or ".", exist_ok=True)
-    with open(output_csv, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=["image_name", "label", "location", "explanation"])
-        writer.writeheader()
-        for row in results:
-            writer.writerow(row)
+    # ---- Close CSV file ----
+    csv_file.close()
+
 
     print(f"\nDone! Results saved to {output_csv}")
     print(f"Total images: {len(results)}")
