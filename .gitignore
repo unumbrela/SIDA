@@ -1,7 +1,7 @@
 __pycache__/
 *.py[cod]
 .codex_csvfix_venv/
-
+ck/
 ck/**/*.bin
 ck/**/*.pth
 ck/**/*.pt
